@@ -1,35 +1,55 @@
 # General Settings
 
-- message: redpanda.developer_mode is enabled
+- id: 0
+  message: redpanda.developer_mode is enabled
+  category: general
   severity: info
   expression: redpanda.developer_mode == true
 
-- message: topic auto creation is enabled and developer mode is disabled
+- id: 1
+  message: topic auto creation is enabled and developer mode is disabled
+  category: general
   severity: warning
   expression: >
     redpanda.auto_create_topics_enabled == true &&
     redpanda.developer_mode == false
+  suppresses: [2]
 
-- message: topic auto creation is enabled
+- id: 2
+  message: topic auto creation is enabled
+  category: general
   severity: info
   expression: redpanda.auto_create_topics_enabled == true
 
 # Performance Tuning
 
-- message: redpanda.topic_partitions_per_shard > 1000
+- id: 3
+  message: redpanda.topic_partitions_per_shard > 1000
+  category: performance
   severity: warning
   expression: redpanda.topic_partitions_per_shard > 1000
 
 # Security Rules (TLS / SASL / etc)
 
-- message: kafka_api_tls.require_client_auth is true, but kafka_enable_authorization is false
+- id: 4
+  message: kafka_api_tls.require_client_auth is true, but kafka_enable_authorization is false
+  category: security
   severity: info
   expression: >
     any(redpanda.kafka_api_tls, {.require_client_auth == true}) &&
     redpanda.kafka_enable_authorization == false
 
-- message: sasl without tls
+- id: 5
+  message: sasl without tls
+  category: security
   severity: warning
   expression: >
     redpanda.enable_sasl == true &&
     any(redpanda.kafka_api_tls, {.enabled == false})
+
+- id: 6
+  message: redpanda.topic_partitions_per_shard is set to %v, which is too high
+  category: test
+  snippets: [redpanda.topic_partitions_per_shard]
+  severity: warning
+  expression: redpanda.topic_partitions_per_shard > 1000

@@ -12,9 +12,13 @@ import (
 )
 
 type Rule struct {
-	Message       string `yaml:"message"`
-	Severity      string `yaml:"severity"`
-	Expression    string `yaml:"expression"`
+	Id            int      `yaml:"id"`
+	Category      string   `yaml:"category"`
+	Message       string   `yaml:"message"`
+	Severity      string   `yaml:"severity"`
+	Expression    string   `yaml:"expression"`
+	Suppresses    []int    `yaml:"suppresses"`
+	Snippets      []string `yaml:"snippets"`
 	SeverityLevel int
 	Program       *vm.Program
 }
@@ -92,17 +96,22 @@ func compile(data map[string]interface{}, rules []*Rule) {
 
 func process(data map[string]interface{}, rules []*Rule, severity int) []error {
 	processingErrors := make([]error, 0)
+	suppressed := make(map[int]int)
 	for _, rule := range rules {
-		if rule.SeverityLevel <= severity {
+		_, isSuppressed := suppressed[rule.Id]
+		if rule.SeverityLevel <= severity && !isSuppressed {
 			output, err := expr.Run(rule.Program, data)
-			//maybeDie(err, fmt.Sprintf("Unable to run function: %s", err))
 			if err != nil {
 				processingErrors = append(processingErrors, err)
 			} else {
 				switch output.(type) {
 				case bool:
 					if output.(bool) {
-						fmt.Printf("%s: %s\n", strings.ToUpper(rule.Severity), rule.Message)
+						var message = getMessage(data, rule)
+						fmt.Printf("%s: %s\n", strings.ToUpper(rule.Severity), message)
+						for _, item := range rule.Suppresses {
+							suppressed[item] = item
+						}
 					}
 				default:
 					fmt.Printf("Error: Expression %s resulted in output: %s\n", rule.Expression, output)
@@ -112,6 +121,20 @@ func process(data map[string]interface{}, rules []*Rule, severity int) []error {
 		}
 	}
 	return processingErrors
+}
+
+func getMessage(data map[string]interface{}, rule *Rule) string {
+	if len(rule.Snippets) == 0 {
+		return rule.Message
+	} else {
+		snippets := make([]any, len(rule.Snippets))
+		for i, s := range rule.Snippets {
+			value, err := expr.Eval(s, data)
+			maybeDie(err, fmt.Sprintf("Unable to process snippet: %s", rule.Snippets[i]))
+			snippets[i] = value
+		}
+		return fmt.Sprintf(rule.Message, snippets...)
+	}
 }
 
 func main() {
