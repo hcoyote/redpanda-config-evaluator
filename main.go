@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -40,18 +41,30 @@ func maybeDie(err error, msg string, args ...any) {
 	}
 }
 
-func readData(filename string) (error, map[string]interface{}) {
+func readData(filename string, format string) (error, map[string]interface{}) {
 	// Read the file
 	content, err := os.ReadFile(filename)
 	if err != nil {
 		return err, nil
 	}
 
-	// Create a map to hold the YAML data
 	var result map[string]interface{}
 
-	// Unmarshal the YAML data into the map
-	err = yaml.Unmarshal(content, &result)
+	switch format {
+	case "json":
+		err = json.Unmarshal(content, &result)
+	case "yaml":
+		err = yaml.Unmarshal(content, &result)
+	case "either":
+		jsonErr := json.Unmarshal(content, &result)
+		if jsonErr != nil {
+			yamlErr := yaml.Unmarshal(content, &result)
+			if yamlErr != nil {
+				err = errors.Join(jsonErr, yamlErr)
+			}
+		}
+	}
+
 	return err, result
 }
 
@@ -142,13 +155,15 @@ func main() {
 	flag.StringVar(&rulesFile, "rules", "rules.yaml", "validation rules")
 	var dataFile string
 	flag.StringVar(&dataFile, "data", "data.yaml", "yaml file to validate")
+	var format string
+	flag.StringVar(&format, "format", "either", "data format (yaml, json, either")
 	var severityFlag string
 	flag.StringVar(&severityFlag, "severity", "info", "severity level to report: info, warning or error")
 	var showErrors bool
 	flag.BoolVar(&showErrors, "errors", false, "show rule processing errors")
 	flag.Parse()
 
-	err, data := readData(dataFile)
+	err, data := readData(dataFile, format)
 	maybeDie(err, fmt.Sprintf("Unable to read data: %s", err))
 	err, rules := readRules(rulesFile)
 	compile(data, rules)
