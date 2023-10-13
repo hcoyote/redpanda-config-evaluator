@@ -1,55 +1,58 @@
-# General Settings
+# Broker Metadata Validation
 
 - id: 0
-  message: redpanda.developer_mode is enabled
-  category: general
+  message: 'Total topics: %v'
+  snippets: ['items | filter(.Name == "metadata") | map(.Response.Topics) | first() | count(true)']
+  category: test
   severity: info
-  expression: redpanda.developer_mode == true
+  expression: true
 
 - id: 1
-  message: topic auto creation is enabled and developer mode is disabled
-  category: general
-  severity: warning
-  expression: >
-    redpanda.auto_create_topics_enabled == true &&
-    redpanda.developer_mode == false
-  suppresses: [2]
+  message: 'Cluster has %v brokers (which is less than the recommended minimum of 3)'
+  description: 'A production cluster requires a minimum of 3 brokers to ensure data resiliency via raft.'
+  snippets: ['items | filter(.Name == "metadata") | map(.Response.Brokers)  | first() | count(true)']
+  category: 'general'
+  severity: 'info'
+  expression: items | filter(.Name == "metadata") | map(.Response.Brokers)  | first() | count(true) < 3
+  suppresses: [2, 3]
 
 - id: 2
-  message: topic auto creation is enabled
-  category: general
-  severity: info
-  expression: redpanda.auto_create_topics_enabled == true
-
-# Performance Tuning
+  message: 'Cluster has no rack awareness'
+  description: >
+    Rack awareness provides a performance benefit for consumers that configure follower fetching. It also ensures data
+    resiliency by
+  category: 'metadata'
+  severity: 'warning'
+  expression: items | filter(.Name == "metadata") | map(.Response.Brokers) | first() | map(.Rack) | all(# == nil)
+  suppresses: [3]
 
 - id: 3
-  message: redpanda.topic_partitions_per_shard > 1000
-  category: performance
-  severity: warning
-  expression: redpanda.topic_partitions_per_shard > 1000
+  message: 'Cluster has less than three unique racks'
+  category: 'metadata'
+  severity: 'warning'
+  expression: >
+    (items | filter(.Name == "metadata") | map(.Response.Brokers) | first() | map(.Rack) | filter (# != nil) | sort() | uniq() | count(true) < 3)
 
-# Security Rules (TLS / SASL / etc)
+# Topic Metadata
+
+- id: 0
+  message: 'Total topics: %v'
+  snippets: ['items | filter(.Name == "metadata") | map(.Response.Topics) | first() | count(true)']
+  category: test
+  severity: info
+  expression: true
+
+- id: 0
+  message: 'Total partitions: %v'
+  snippets: [ 'items | filter(.Name == "metadata") | map(.Response.Topics) | first() | toPairs() | map(len(#[1].Partitions)) | sum()' ]
+  category: test
+  severity: info
+  expression: true
 
 - id: 4
-  message: kafka_api_tls.require_client_auth is true, but kafka_enable_authorization is false
-  category: security
+  message: '%v topics with more than 10 partitions: %v'
+  snippets: ['items | filter(.Name == "metadata") | map(.Response.Topics) | first() | toPairs() | filter(len(#[1].Partitions) > 10) | count(true)',
+    'items | filter(.Name == "metadata") | map(.Response.Topics) | first() | toPairs() | filter(len(#[1].Partitions) > 10) | map(string(#[0]) + ":" + string(len(#[1].Partitions))) | toJSON()']
+  category: topics
   severity: info
-  expression: >
-    any(redpanda.kafka_api_tls, {.require_client_auth == true}) &&
-    redpanda.kafka_enable_authorization == false
-
-- id: 5
-  message: sasl without tls
-  category: security
-  severity: warning
-  expression: >
-    redpanda.enable_sasl == true &&
-    any(redpanda.kafka_api_tls, {.enabled == false})
-
-- id: 6
-  message: redpanda.topic_partitions_per_shard is set to %v, which is too high
-  category: test
-  snippets: [redpanda.topic_partitions_per_shard]
-  severity: warning
-  expression: redpanda.topic_partitions_per_shard > 1000
+  expression: true
