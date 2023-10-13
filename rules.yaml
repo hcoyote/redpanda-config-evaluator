@@ -1,58 +1,68 @@
-# Broker Metadata Validation
+facts:
 
-- id: 0
-  message: 'Total topics: %v'
-  snippets: ['items | filter(.Name == "metadata") | map(.Response.Topics) | first() | count(true)']
-  category: test
-  severity: info
-  expression: true
+  - id: 0
+    name: topics
+    expression: 'items | filter(.Name == "metadata") | map(.Response.Topics) | first() | count(true)'
 
-- id: 1
-  message: 'Cluster has %v brokers (which is less than the recommended minimum of 3)'
-  description: 'A production cluster requires a minimum of 3 brokers to ensure data resiliency via raft.'
-  snippets: ['items | filter(.Name == "metadata") | map(.Response.Brokers)  | first() | count(true)']
-  category: 'general'
-  severity: 'info'
-  expression: items | filter(.Name == "metadata") | map(.Response.Brokers)  | first() | count(true) < 3
-  suppresses: [2, 3]
+  - id: 1
+    name: partitions
+    expression: 'items | filter(.Name == "metadata") | map(.Response.Topics) | first() | toPairs() | map(len(#[1].Partitions)) | sum()'
 
-- id: 2
-  message: 'Cluster has no rack awareness'
-  description: >
-    Rack awareness provides a performance benefit for consumers that configure follower fetching. It also ensures data
-    resiliency by
-  category: 'metadata'
-  severity: 'warning'
-  expression: items | filter(.Name == "metadata") | map(.Response.Brokers) | first() | map(.Rack) | all(# == nil)
-  suppresses: [3]
+rules:
 
-- id: 3
-  message: 'Cluster has less than three unique racks'
-  category: 'metadata'
-  severity: 'warning'
-  expression: >
-    (items | filter(.Name == "metadata") | map(.Response.Brokers) | first() | map(.Rack) | filter (# != nil) | sort() | uniq() | count(true) < 3)
+  - id: 1
+    message: 'Cluster has %v brokers (which is less than the recommended minimum of 3)'
+    description: 'A production cluster requires a minimum of 3 brokers to ensure data resiliency via raft.'
+    snippets: ['items | filter(.Name == "metadata") | map(.Response.Brokers)  | first() | count(true)']
+    category: 'general'
+    severity: 'info'
+    expression: items | filter(.Name == "metadata") | map(.Response.Brokers)  | first() | count(true) < 3
+    suppresses: [2, 3]
 
-# Topic Metadata
+  - id: 2
+    message: 'Cluster has no rack awareness'
+    description: >
+      Rack awareness provides a performance benefit for consumers that configure follower fetching. It also ensures data
+      resiliency by
+    category: 'metadata'
+    severity: 'warning'
+    expression: items | filter(.Name == "metadata") | map(.Response.Brokers) | first() | map(.Rack) | all(# == nil)
+    suppresses: [3]
 
-- id: 0
-  message: 'Total topics: %v'
-  snippets: ['items | filter(.Name == "metadata") | map(.Response.Topics) | first() | count(true)']
-  category: test
-  severity: info
-  expression: true
+  - id: 3
+    message: 'Cluster has less than three unique racks'
+    category: 'metadata'
+    severity: 'warning'
+    expression: >
+      (items | filter(.Name == "metadata") | map(.Response.Brokers) | first() | map(.Rack) | filter (# != nil) | sort() | uniq() | count(true) < 3)
 
-- id: 0
-  message: 'Total partitions: %v'
-  snippets: [ 'items | filter(.Name == "metadata") | map(.Response.Topics) | first() | toPairs() | map(len(#[1].Partitions)) | sum()' ]
-  category: test
-  severity: info
-  expression: true
+  # Topic Metadata
 
-- id: 4
-  message: '%v topics with more than 10 partitions: %v'
-  snippets: ['items | filter(.Name == "metadata") | map(.Response.Topics) | first() | toPairs() | filter(len(#[1].Partitions) > 10) | count(true)',
-    'items | filter(.Name == "metadata") | map(.Response.Topics) | first() | toPairs() | filter(len(#[1].Partitions) > 10) | map(string(#[0]) + ":" + string(len(#[1].Partitions))) | toJSON()']
-  category: topics
-  severity: info
-  expression: true
+  - id: 4
+    message: 'Total topics: %v'
+    snippets: ['items | filter(.Name == "metadata") | map(.Response.Topics) | first() | count(true)']
+    category: test
+    severity: info
+    expression: true
+
+  - id: 5
+    message: 'Total partitions: %v'
+    snippets: [ 'items | filter(.Name == "metadata") | map(.Response.Topics) | first() | toPairs() | map(len(#[1].Partitions)) | sum()' ]
+    category: test
+    severity: info
+    expression: true
+
+  - id: 6
+    message: 'Avg partitions per topic: %v'
+    snippets: ['partitions / topics']
+    category: test
+    severity: info
+    expression: true
+
+  - id: 7
+    message: '%v topics with more than 10 partitions: %v'
+    snippets: ['items | filter(.Name == "metadata") | map(.Response.Topics) | first() | toPairs() | filter(len(#[1].Partitions) > 10) | count(true)',
+      'items | filter(.Name == "metadata") | map(.Response.Topics) | first() | toPairs() | filter(len(#[1].Partitions) > 10) | map(string(#[0]) + ":" + string(len(#[1].Partitions))) | toJSON()']
+    category: topics
+    severity: info
+    expression: true

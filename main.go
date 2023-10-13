@@ -11,6 +11,14 @@ import (
 	"strings"
 )
 
+type Fact struct {
+	Id           int    `yaml:"id"`
+	Name         string `yaml:"name"`
+	Expression   string `yaml:"expression"`
+	CompileError error
+	RunError     error
+}
+
 type Rule struct {
 	Id                int      `yaml:"id"`
 	Category          string   `yaml:"category"`
@@ -26,6 +34,11 @@ type Rule struct {
 	RunError          error
 	SnippetErrors     []error
 	SnippetErrorCount int
+}
+
+type Config struct {
+	Facts []*Fact `yaml:"facts"`
+	Rules []*Rule `yaml:"rules"`
 }
 
 var errorCount int
@@ -69,7 +82,7 @@ func readData(filename string) (error, map[string]interface{}) {
 	}
 }
 
-func readRules(filename string) (error, []*Rule) {
+func readConfig(filename string) (error, *Config) {
 	// Read the file
 	content, err := os.ReadFile(filename)
 	if err != nil {
@@ -77,11 +90,11 @@ func readRules(filename string) (error, []*Rule) {
 	}
 
 	// Create a slice to hold the YAML data
-	var result []*Rule
+	var config Config
 
 	// Unmarshal the YAML data into the map
-	err = yaml.Unmarshal(content, &result)
-	return err, result
+	err = yaml.Unmarshal(content, &config)
+	return err, &config
 }
 
 func severityLevel(code string) (int, error) {
@@ -134,7 +147,35 @@ func uniq(params ...any) (any, error) {
 	return result, nil
 }
 
-func process(data map[string]interface{}, rules []*Rule, severity int) {
+func processFacts(data map[string]interface{}, facts []*Fact) {
+	for _, fact := range facts {
+		fact.Expression = strings.TrimSuffix(fact.Expression, "\n")
+		options := []expr.Option{
+			expr.Function("uniq", uniq, new(func([]any) []any)),
+			expr.Env(data),
+		}
+		program, err := expr.Compile(fact.Expression, options...)
+		if err != nil {
+			fact.CompileError = err
+			errorCount = errorCount + 1
+		} else {
+			value, err := expr.Run(program, data)
+			if err != nil {
+				fact.RunError = err
+				errorCount = errorCount + 1
+			} else {
+				_, found := data[fact.Name]
+				if found {
+					fact.RunError = errors.New("unable to save fact to env because the key already exists")
+				} else {
+					data[fact.Name] = value
+				}
+			}
+		}
+	}
+}
+
+func processRules(data map[string]interface{}, rules []*Rule, severity int) {
 	suppressed := make(map[int]int)
 	for _, rule := range rules {
 		_, isSuppressed := suppressed[rule.Id]
@@ -197,61 +238,76 @@ func getMessage(data map[string]interface{}, rule *Rule) string {
 }
 
 func main() {
+
 	var rulesFile string
 	flag.StringVar(&rulesFile, "rules", "rules.yaml", "validation rules")
+
 	var dataFile string
 	flag.StringVar(&dataFile, "data", "data.json", "YAML / JSON file to validate")
+
 	var severityFlag string
 	flag.StringVar(&severityFlag, "severity", "info", "severity level: info, warning, error")
+	severity, _ := severityLevel(severityFlag)
+
 	var showErrors bool
 	flag.BoolVar(&showErrors, "errors", true, "show rule processing errors")
+
 	flag.Parse()
 
 	err, data := readData(dataFile)
 	maybeDie(err, fmt.Sprintf("Unable to read data: %s", err))
-	err, rules := readRules(rulesFile)
-	compile(data, rules)
-	severity, _ := severityLevel(severityFlag)
-	process(data, rules, severity)
+	err, config := readConfig(rulesFile)
+	compile(data, config.Rules)
+
+	processFacts(data, config.Facts)
+	processRules(data, config.Rules, severity)
 
 	if errorCount > 0 {
 		fmt.Printf("WARNING: There are %v errors\n", errorCount)
 	}
 
 	if showErrors {
-		fmt.Fprintf(os.Stderr, "\n")
-		for _, rule := range rules {
-			if rule.CompileError != nil || rule.RunError != nil || rule.SnippetErrorCount > 0 {
-				fmt.Fprintf(os.Stderr, "Error in Rule: %v\n", rule.Id)
-				if rule.CompileError != nil || rule.RunError != nil {
-					fmt.Fprintf(os.Stderr, "  Expression: %s\n", rule.Expression)
-				}
-				if rule.CompileError != nil {
-					fmt.Fprintf(os.Stderr, "  Compile Error: %v\n", rule.CompileError)
-				}
-				if rule.RunError != nil {
-					fmt.Fprintf(os.Stderr, "  Run Error: %v\n", rule.RunError)
-				}
-				if rule.SnippetErrorCount > 0 {
-					for i, snippet := range rule.Snippets {
-						if rule.SnippetErrors[i] != nil {
-							fmt.Fprintf(os.Stderr, "  Snippet Expression: %s\n", snippet)
-							fmt.Fprintf(os.Stderr, "       Snippet Error: %v\n", rule.SnippetErrors[i])
-						}
-					}
+		printErrors(config)
+	}
+}
 
-				}
+func printErrors(config *Config) {
+	fmt.Fprintf(os.Stderr, "\n")
+
+	for _, fact := range config.Facts {
+		if fact.CompileError != nil || fact.RunError != nil {
+			fmt.Fprintf(os.Stderr, "Error in Fact: %v\n", fact.Id)
+			fmt.Fprintf(os.Stderr, "  Expression: %s\n", fact.Expression)
+			if fact.CompileError != nil {
+				fmt.Fprintf(os.Stderr, "  Compile Error: %v\n", fact.CompileError)
+			}
+			if fact.RunError != nil {
+				fmt.Fprintf(os.Stderr, "  Run Error: %v\n", fact.RunError)
 			}
 		}
 	}
 
-	//if showErrors {
-	//	if len(processingErrors) > 0 {
-	//		fmt.Fprintf(os.Stderr, "Processing errors:\n")
-	//		for _, err := range processingErrors {
-	//			fmt.Fprintf(os.Stderr, "\n")
-	//			fmt.Fprintf(os.Stderr, "%s\n", err)
-	//		}
-	//	}
-	//}
+	for _, rule := range config.Rules {
+		if rule.CompileError != nil || rule.RunError != nil || rule.SnippetErrorCount > 0 {
+			fmt.Fprintf(os.Stderr, "Error in Rule: %v\n", rule.Id)
+			if rule.CompileError != nil || rule.RunError != nil {
+				fmt.Fprintf(os.Stderr, "  Expression: %s\n", rule.Expression)
+			}
+			if rule.CompileError != nil {
+				fmt.Fprintf(os.Stderr, "  Compile Error: %v\n", rule.CompileError)
+			}
+			if rule.RunError != nil {
+				fmt.Fprintf(os.Stderr, "  Run Error: %v\n", rule.RunError)
+			}
+			if rule.SnippetErrorCount > 0 {
+				for i, snippet := range rule.Snippets {
+					if rule.SnippetErrors[i] != nil {
+						fmt.Fprintf(os.Stderr, "  Snippet Expression: %s\n", snippet)
+						fmt.Fprintf(os.Stderr, "       Snippet Error: %v\n", rule.SnippetErrors[i])
+					}
+				}
+
+			}
+		}
+	}
 }
