@@ -6,6 +6,39 @@ values:
   - name: partitions
     expression: 'items | filter(.Name == "metadata") | map(.Response.Topics) | first() | toPairs() | map(len(#[1].Partitions)) | sum()'
 
+loop:
+  - names: ['topic', 'config']
+    expression: 'items | filter(.Name == "topic_configs") | map(.Response) | first() | map([.Name, .Configs]) | fromPairs()'
+
+    collate:
+
+      - name: 'topics_with_redpanda.remote.delete_false'
+        predicate: 'config | filter(.Key == "redpanda.remote.delete" && .Value == "false") | count(true) > 0'
+        value: 'topic'
+
+    rules:
+
+      - message: "Topic %v has non default configs: %v"
+        predicate: 'config | filter(.Source != "DEFAULT_CONFIG") | count(true) > 0'
+        category: 'test'
+        severity: 'info'
+        snippets: ['topic', 'config | filter(.Source != "DEFAULT_CONFIG") | map(.Key + "=" + .Value)']
+
+      - message: "Topic %v has redpanda.remote.delete set to false."
+        predicate: 'config | filter(.Key == "redpanda.remote.delete" && .Value == "false") | count(true) > 0'
+        category: 'test'
+        severity: 'info'
+        snippets: [ 'topic' ]
+
+      - message: "Topic %v has retention.bytes set to -1 and retention.local.target.ms set to 1800000."
+        predicate: >
+          (config | one(.Key == "retention.bytes" && .Value == "-1")) &&
+          (config | one(.Key == "retention.local.target.ms" && .Value == "1800000"))
+        category: 'test'
+        severity: 'info'
+        snippets: [ 'topic' ]
+
+
 outputs:
 
   - message: 'Total topics: %v'
@@ -25,7 +58,7 @@ rules:
     snippets: ['items | filter(.Name == "metadata") | map(.Response.Brokers)  | first() | count(true)']
     category: 'general'
     severity: 'info'
-    expression: items | filter(.Name == "metadata") | map(.Response.Brokers)  | first() | count(true) < 3
+    predicate: 'items | filter(.Name == "metadata") | map(.Response.Brokers)  | first() | count(true) < 3'
     suppresses: [2, 3]
 
   - id: 2
@@ -35,14 +68,14 @@ rules:
       resiliency by
     category: 'metadata'
     severity: 'warning'
-    expression: items | filter(.Name == "metadata") | map(.Response.Brokers) | first() | map(.Rack) | all(# == nil)
+    predicate: 'items | filter(.Name == "metadata") | map(.Response.Brokers) | first() | map(.Rack) | all(# == nil)'
     suppresses: [3]
 
   - id: 3
     message: 'Cluster has less than three unique racks'
     category: 'metadata'
     severity: 'warning'
-    expression: >
+    predicate: >
       (items | filter(.Name == "metadata") | map(.Response.Brokers) | first() | map(.Rack) | filter (# != nil) | sort() | uniq() | count(true) < 3)
 
   # Topic Metadata
@@ -53,34 +86,9 @@ rules:
       'items | filter(.Name == "metadata") | map(.Response.Topics) | first() | toPairs() | filter(len(#[1].Partitions) > 10) | map(string(#[0]) + ":" + string(len(#[1].Partitions))) | toJSON()']
     category: topics
     severity: info
-    expression: true
+    predicate: true
     allow-long-message: true
 
-loop:
-  - names: ['topic', 'config']
-    expression: 'items | filter(.Name == "topic_configs") | map(.Response) | first() | map([.Name, .Configs]) | fromPairs()'
-
-    rules:
-
-      - message: "Topic %v has non default configs: %v"
-        expression: 'config | filter(.Source != "DEFAULT_CONFIG") | count(true) > 0'
-        category: 'test'
-        severity: 'info'
-        snippets: ['topic', 'config | filter(.Source != "DEFAULT_CONFIG") | map(.Key + "=" + .Value)']
-
-      - message: "Topic %v has redpanda.remote.delete set to false."
-        expression: 'config | filter(.Key == "redpanda.remote.delete" && .Value == "false") | count(true) > 0'
-        category: 'test'
-        severity: 'info'
-        snippets: [ 'topic' ]
-
-      - message: "Topic %v has retention.bytes set to -1 and retention.local.target.ms set to 1800000."
-        expression: >
-          (config | one(.Key == "retention.bytes" && .Value == "-1")) &&
-          (config | one(.Key == "retention.local.target.ms" && .Value == "1800000"))
-        category: 'test'
-        severity: 'info'
-        snippets: [ 'topic' ]
 
 
 

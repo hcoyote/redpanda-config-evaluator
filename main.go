@@ -86,11 +86,11 @@ type Rule struct {
 	AllowLongMessageValue bool     `yaml:"allow-long-message"`
 	Description           string   `yaml:"description"`
 	Severity              string   `yaml:"severity"`
-	Expression            string   `yaml:"expression"`
+	Predicate             string   `yaml:"predicate"`
 	Suppresses            []int    `yaml:"suppresses"`
 	SnippetExpressions    []string `yaml:"snippets"`
 	SeverityLevel         int
-	Code                  Code
+	PredicateCode         Code
 	SnippetCodes          []*Code
 	SnippetErrorCount     int
 }
@@ -108,20 +108,31 @@ func (r Rule) AllowLongMessage() bool {
 }
 
 type Loop struct {
-	Expression string   `yaml:"expression"`
-	Names      []string `yaml:"names"`
-	Code       Code
-	Values     []*Value  `yaml:"values"`
-	Outputs    []*Output `yaml:"outputs"`
-	Rules      []*Rule   `yaml:"rules"`
-	Loops      []*Loop   `yaml:"loop"`
+	Expression     string `yaml:"expression"`
+	ExpressionCode Code
+	Names          []string     `yaml:"names"`
+	Collations     []*Collation `yaml:"collate"`
+	Values         []*Value     `yaml:"values"`
+	Loops          []*Loop      `yaml:"loop"`
+	Outputs        []*Output    `yaml:"outputs"`
+	Rules          []*Rule      `yaml:"rules"`
+}
+
+type Collation struct {
+	Id            int    `yaml:"id"`
+	Name          string `yaml:"name"`
+	Description   string `yaml:"description"`
+	Predicate     string `yaml:"predicate"`
+	PredicateCode Code
+	Value         string `yaml:"value"`
+	ValueCode     Code
 }
 
 type Config struct {
 	Values  []*Value  `yaml:"values"`
+	Loops   []*Loop   `yaml:"loop"`
 	Outputs []*Output `yaml:"outputs"`
 	Rules   []*Rule   `yaml:"rules"`
-	Loops   []*Loop   `yaml:"loop"`
 }
 
 var errorCount int
@@ -277,8 +288,8 @@ func processRules(data map[string]interface{}, rules []*Rule, severity int) {
 		if rule.SeverityLevel <= severity && !isSuppressed {
 
 			// Compile Rule
-			rule.Code.Expression = rule.Expression
-			rule.Code.compile(data)
+			rule.PredicateCode.Expression = rule.Predicate
+			rule.PredicateCode.compile(data)
 			level, err := severityLevel(rule.Severity)
 			maybeDieWithoutMessage(err)
 			rule.SeverityLevel = level
@@ -294,11 +305,11 @@ func processRules(data map[string]interface{}, rules []*Rule, severity int) {
 			}
 
 			// Run Rule
-			if rule.Code.CompileError == nil {
-				output, err := expr.Run(rule.Code.Program, data)
+			if rule.PredicateCode.CompileError == nil {
+				output, err := expr.Run(rule.PredicateCode.Program, data)
 
 				if err != nil {
-					rule.Code.RunError = err
+					rule.PredicateCode.RunError = err
 					errorCount = errorCount + 1
 				} else {
 					switch output.(type) {
@@ -311,7 +322,7 @@ func processRules(data map[string]interface{}, rules []*Rule, severity int) {
 							}
 						}
 					default:
-						rule.Code.RunError = errors.New("expression didn't result in a boolean value")
+						rule.PredicateCode.RunError = errors.New("expression didn't result in a boolean value")
 					}
 				}
 			}
@@ -348,19 +359,19 @@ func getMessage(data map[string]interface{}, rule Printable) string {
 
 func processLoops(data map[string]interface{}, loops []*Loop, severity int) {
 	for _, loop := range loops {
-		loop.Code.Expression = loop.Expression
-		loop.Code.compile(data)
-		if loop.Code.CompileError != nil {
+		loop.ExpressionCode.Expression = loop.Expression
+		loop.ExpressionCode.compile(data)
+		if loop.ExpressionCode.CompileError != nil {
 			continue
 		}
-		loop.Code.run(data)
-		if loop.Code.RunError != nil {
+		loop.ExpressionCode.run(data)
+		if loop.ExpressionCode.RunError != nil {
 			continue
 		}
 		// The expression ran, so we figure out the type (array or map) and recurse
-		switch loop.Code.Output.(type) {
+		switch loop.ExpressionCode.Output.(type) {
 		case map[interface{}]interface{}:
-			for k, v := range loop.Code.Output.(map[interface{}]interface{}) {
+			for k, v := range loop.ExpressionCode.Output.(map[interface{}]interface{}) {
 				d := make(map[string]interface{})
 				if len(loop.Names) == 0 {
 					loop.Names = []string{"key", "value"}
@@ -370,14 +381,14 @@ func processLoops(data map[string]interface{}, loops []*Loop, severity int) {
 					d[loop.Names[0]] = k
 					d[loop.Names[1]] = v
 					processValues(d, loop.Values)
+					processLoops(d, loop.Loops, severity)
 					processOutputs(d, loop.Outputs, severity)
 					processRules(d, loop.Rules, severity)
-					processLoops(d, loop.Loops, severity)
 				}
-				loop.Code.RunError = errors.New("wrong number of names for map")
+				loop.ExpressionCode.RunError = errors.New("wrong number of names for map")
 			}
 		case []interface{}:
-			for _, v := range loop.Code.Output.([]interface{}) {
+			for _, v := range loop.ExpressionCode.Output.([]interface{}) {
 				d := make(map[string]interface{})
 				if len(loop.Names) == 0 {
 					loop.Names = []string{"item"}
@@ -419,15 +430,15 @@ func main() {
 	err, config := readConfig(rulesFile)
 
 	processValues(data, config.Values)
+	processLoops(data, config.Loops, severity)
 	processOutputs(data, config.Outputs, severity)
 	processRules(data, config.Rules, severity)
-	processLoops(data, config.Loops, severity)
 
 	if errorCount > 0 {
 		fmt.Printf("WARNING: There are %v errors\n", errorCount)
 	}
 
-	if showErrors {
+	if errorCount > 0 && showErrors {
 		printErrors(config)
 	}
 }
@@ -442,7 +453,7 @@ func printErrors(config *Config) {
 	for _, value := range config.Values {
 		if value.Code.CompileError != nil || value.Code.RunError != nil {
 			reportError("Error in Value: %v\n", value.Id)
-			reportError("  Expression: %s\n", value.Expression)
+			reportError("  Predicate: %s\n", value.Expression)
 			if value.Code.CompileError != nil {
 				reportError("  Compile Error: %v\n", value.Code.CompileError)
 			}
@@ -453,20 +464,20 @@ func printErrors(config *Config) {
 	}
 
 	for _, rule := range config.Rules {
-		if rule.Code.CompileError != nil || rule.Code.RunError != nil || rule.SnippetErrorCount > 0 {
+		if rule.PredicateCode.CompileError != nil || rule.PredicateCode.RunError != nil || rule.SnippetErrorCount > 0 {
 			reportError("Error in Rule: %v\n", rule.Id)
-			if rule.Code.CompileError != nil || rule.Code.RunError != nil {
-				reportError("  Expression: %s\n", rule.Expression)
+			if rule.PredicateCode.CompileError != nil || rule.PredicateCode.RunError != nil {
+				reportError("  Predicate: %s\n", rule.Predicate)
 			}
-			if rule.Code.CompileError != nil {
-				reportError("  Compile Error: %v\n", rule.Code.CompileError)
+			if rule.PredicateCode.CompileError != nil {
+				reportError("  Compile Error: %v\n", rule.PredicateCode.CompileError)
 			}
-			if rule.Code.RunError != nil {
-				reportError("  Run Error: %v\n", rule.Code.RunError)
+			if rule.PredicateCode.RunError != nil {
+				reportError("  Run Error: %v\n", rule.PredicateCode.RunError)
 			}
 			if rule.SnippetErrorCount > 0 {
 				for _, snippet := range rule.SnippetCodes {
-					reportError("  Snippet Expression: %s\n", snippet.Expression)
+					reportError("  Snippet Predicate: %s\n", snippet.Expression)
 					if snippet.CompileError != nil {
 						reportError("    Compile Error: %v\n", snippet.CompileError)
 					}
