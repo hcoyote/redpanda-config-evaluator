@@ -19,6 +19,12 @@ type Code struct {
 	Output       interface{}
 }
 
+type Printable interface {
+	Message() string
+	Snippets() []*Code
+	AllowLongMessage() bool
+}
+
 func (code *Code) compile(data map[string]interface{}) {
 	code.Expression = strings.TrimSuffix(code.Expression, "\n")
 	options := []expr.Option{
@@ -44,7 +50,29 @@ func (code *Code) run(data map[string]interface{}) {
 	}
 }
 
-type Fact struct {
+type Output struct {
+	Id                 int    `yaml:"id"`
+	MessageContent     string `yaml:"message"`
+	Severity           string `yaml:"severity"`
+	SeverityLevel      int
+	SnippetExpressions []string `yaml:"snippets"`
+	SnippetCodes       []*Code
+	SnippetErrorCount  int
+}
+
+func (o Output) Message() string {
+	return o.MessageContent
+}
+
+func (o Output) Snippets() []*Code {
+	return o.SnippetCodes
+}
+
+func (o Output) AllowLongMessage() bool {
+	return true
+}
+
+type Value struct {
 	Id         int    `yaml:"id"`
 	Name       string `yaml:"name"`
 	Expression string `yaml:"expression"`
@@ -52,24 +80,48 @@ type Fact struct {
 }
 
 type Rule struct {
-	Id                int      `yaml:"id"`
-	Category          string   `yaml:"category"`
-	Message           string   `yaml:"message"`
-	AllowLongMessage  bool     `yaml:"allow-long-message"`
-	Description       string   `yaml:"description"`
-	Severity          string   `yaml:"severity"`
-	Expression        string   `yaml:"expression"`
-	Suppresses        []int    `yaml:"suppresses"`
-	Snippets          []string `yaml:"snippets"`
-	SeverityLevel     int
-	Code              Code
-	SnippetCodes      []*Code
-	SnippetErrorCount int
+	Id                    int      `yaml:"id"`
+	Category              string   `yaml:"category"`
+	MessageContent        string   `yaml:"message"`
+	AllowLongMessageValue bool     `yaml:"allow-long-message"`
+	Description           string   `yaml:"description"`
+	Severity              string   `yaml:"severity"`
+	Expression            string   `yaml:"expression"`
+	Suppresses            []int    `yaml:"suppresses"`
+	SnippetExpressions    []string `yaml:"snippets"`
+	SeverityLevel         int
+	Code                  Code
+	SnippetCodes          []*Code
+	SnippetErrorCount     int
+}
+
+func (r Rule) Message() string {
+	return r.MessageContent
+}
+
+func (r Rule) Snippets() []*Code {
+	return r.SnippetCodes
+}
+
+func (r Rule) AllowLongMessage() bool {
+	return r.AllowLongMessageValue
+}
+
+type Loop struct {
+	Expression string   `yaml:"expression"`
+	Names      []string `yaml:"names"`
+	Code       Code
+	Values     []*Value  `yaml:"values"`
+	Outputs    []*Output `yaml:"outputs"`
+	Rules      []*Rule   `yaml:"rules"`
+	Loops      []*Loop   `yaml:"loop"`
 }
 
 type Config struct {
-	Facts []*Fact `yaml:"facts"`
-	Rules []*Rule `yaml:"rules"`
+	Values  []*Value  `yaml:"values"`
+	Outputs []*Output `yaml:"outputs"`
+	Rules   []*Rule   `yaml:"rules"`
+	Loops   []*Loop   `yaml:"loop"`
 }
 
 var errorCount int
@@ -143,25 +195,6 @@ func severityLevel(code string) (int, error) {
 	}
 }
 
-func compile(data map[string]interface{}, rules []*Rule) {
-	for _, rule := range rules {
-		rule.Code.Expression = rule.Expression
-		rule.Code.compile(data)
-		level, err := severityLevel(rule.Severity)
-		maybeDieWithoutMessage(err)
-		rule.SeverityLevel = level
-
-		rule.SnippetCodes = make([]*Code, len(rule.Snippets))
-		for i, snippet := range rule.Snippets {
-			rule.SnippetCodes[i] = &Code{Expression: snippet}
-			rule.SnippetCodes[i].compile(data)
-			if rule.SnippetCodes[i].CompileError != nil {
-				rule.SnippetErrorCount = rule.SnippetErrorCount + 1
-			}
-		}
-	}
-}
-
 func uniq(params ...any) (any, error) {
 	var items []any
 	items = params[0].([]any)
@@ -178,36 +211,89 @@ func uniq(params ...any) (any, error) {
 	return result, nil
 }
 
-func processFacts(data map[string]interface{}, facts []*Fact) {
-	for _, fact := range facts {
+func processValues(data map[string]interface{}, values []*Value) {
+	for _, value := range values {
 
-		fact.Code.Expression = fact.Expression
-		fact.Code.compile(data)
+		value.Code.Expression = value.Expression
+		value.Code.compile(data)
 
-		if fact.Code.CompileError != nil {
+		if value.Code.CompileError != nil {
 			errorCount = errorCount + 1
 		} else {
 			//value, err := expr.Run(program, data)
-			fact.Code.run(data)
-			if fact.Code.RunError != nil {
+			value.Code.run(data)
+			if value.Code.RunError != nil {
 				errorCount = errorCount + 1
 			} else {
-				_, found := data[fact.Name]
+				_, found := data[value.Name]
 				if found {
-					fact.Code.RunError = errors.New("unable to save fact to env because the key already exists")
+					value.Code.RunError = errors.New("unable to save value to env because the key already exists")
 				} else {
-					data[fact.Name] = fact.Code.Output
+					data[value.Name] = value.Code.Output
 				}
 			}
 		}
 	}
 }
 
+func processOutputs(data map[string]interface{}, outputs []*Output, severity int) {
+	for _, output := range outputs {
+
+		if output.Severity == "" {
+			output.Severity = "info"
+		}
+		level, err := severityLevel(output.Severity)
+		maybeDieWithoutMessage(err)
+		output.SeverityLevel = level
+		if output.SeverityLevel <= severity {
+
+			// Compile Snippets
+			output.SnippetCodes = make([]*Code, len(output.SnippetExpressions))
+			for i, snippet := range output.SnippetExpressions {
+				output.SnippetCodes[i] = &Code{Expression: snippet}
+				output.SnippetCodes[i].compile(data)
+				if output.SnippetCodes[i].CompileError != nil {
+					output.SnippetErrorCount = output.SnippetErrorCount + 1
+				}
+			}
+
+			var message = getMessage(data, output)
+			fmt.Printf("%s: %s\n", strings.ToUpper(output.Severity), message)
+		}
+
+	}
+}
+
+var suppressed = make(map[int]int)
+
 func processRules(data map[string]interface{}, rules []*Rule, severity int) {
-	suppressed := make(map[int]int)
 	for _, rule := range rules {
 		_, isSuppressed := suppressed[rule.Id]
+
+		level, err := severityLevel(rule.Severity)
+		maybeDieWithoutMessage(err)
+		rule.SeverityLevel = level
+
 		if rule.SeverityLevel <= severity && !isSuppressed {
+
+			// Compile Rule
+			rule.Code.Expression = rule.Expression
+			rule.Code.compile(data)
+			level, err := severityLevel(rule.Severity)
+			maybeDieWithoutMessage(err)
+			rule.SeverityLevel = level
+
+			// Compile Snippets
+			rule.SnippetCodes = make([]*Code, len(rule.SnippetExpressions))
+			for i, snippet := range rule.SnippetExpressions {
+				rule.SnippetCodes[i] = &Code{Expression: snippet}
+				rule.SnippetCodes[i].compile(data)
+				if rule.SnippetCodes[i].CompileError != nil {
+					rule.SnippetErrorCount = rule.SnippetErrorCount + 1
+				}
+			}
+
+			// Run Rule
 			if rule.Code.CompileError == nil {
 				output, err := expr.Run(rule.Code.Program, data)
 
@@ -233,29 +319,81 @@ func processRules(data map[string]interface{}, rules []*Rule, severity int) {
 	}
 }
 
-func getMessage(data map[string]interface{}, rule *Rule) string {
-	if len(rule.Snippets) == 0 {
-		return rule.Message
+func getMessage(data map[string]interface{}, rule Printable) string {
+	rule.Snippets()
+	if len(rule.Snippets()) == 0 {
+		return rule.Message()
 	} else {
-		snippets := make([]interface{}, len(rule.Snippets))
-		for i, code := range rule.SnippetCodes {
+		snippetResults := make([]interface{}, len(rule.Snippets()))
+		for i, code := range rule.Snippets() {
 			if code.CompileError != nil {
-				snippets[i] = "<compile error>"
+				snippetResults[i] = "<compile error>"
 			} else {
 				code.run(data)
 				if code.RunError != nil {
-					snippets[i] = "<run error>"
-					rule.SnippetErrorCount = rule.SnippetErrorCount + 1
+					snippetResults[i] = "<run error>"
+					//rule.SnippetErrorCount = rule.SnippetErrorCount + 1
 				} else {
-					snippets[i] = code.Output
+					snippetResults[i] = code.Output
 				}
 			}
 		}
-		output := fmt.Sprintf(rule.Message, snippets...)
-		if len(output) > 1000 && rule.AllowLongMessage == false {
+		output := fmt.Sprintf(rule.Message(), snippetResults...)
+		if len(output) > 1000 && rule.AllowLongMessage() == false {
 			output = output[0:1000] + " ... <truncated>"
 		}
 		return output
+	}
+}
+
+func processLoops(data map[string]interface{}, loops []*Loop, severity int) {
+	for _, loop := range loops {
+		loop.Code.Expression = loop.Expression
+		loop.Code.compile(data)
+		if loop.Code.CompileError != nil {
+			continue
+		}
+		loop.Code.run(data)
+		if loop.Code.RunError != nil {
+			continue
+		}
+		// The expression ran, so we figure out the type (array or map) and recurse
+		switch loop.Code.Output.(type) {
+		case map[interface{}]interface{}:
+			for k, v := range loop.Code.Output.(map[interface{}]interface{}) {
+				d := make(map[string]interface{})
+				if len(loop.Names) == 0 {
+					loop.Names = []string{"key", "value"}
+				}
+				if len(loop.Names) == 2 {
+					d["outer"] = data
+					d[loop.Names[0]] = k
+					d[loop.Names[1]] = v
+					processValues(d, loop.Values)
+					processOutputs(d, loop.Outputs, severity)
+					processRules(d, loop.Rules, severity)
+					processLoops(d, loop.Loops, severity)
+				}
+				loop.Code.RunError = errors.New("wrong number of names for map")
+			}
+		case []interface{}:
+			for _, v := range loop.Code.Output.([]interface{}) {
+				d := make(map[string]interface{})
+				if len(loop.Names) == 0 {
+					loop.Names = []string{"item"}
+				}
+				if len(loop.Names) == 1 {
+					d["outer"] = data
+					d[loop.Names[0]] = v
+					processValues(d, loop.Values)
+					processOutputs(d, loop.Outputs, severity)
+					processRules(d, loop.Rules, severity)
+					processLoops(d, loop.Loops, severity)
+				}
+			}
+		default:
+			println("Oops")
+		}
 	}
 }
 
@@ -280,9 +418,10 @@ func main() {
 	maybeDie(err, fmt.Sprintf("Unable to read data: %s", err))
 	err, config := readConfig(rulesFile)
 
-	processFacts(data, config.Facts)
-	compile(data, config.Rules)
+	processValues(data, config.Values)
+	processOutputs(data, config.Outputs, severity)
 	processRules(data, config.Rules, severity)
+	processLoops(data, config.Loops, severity)
 
 	if errorCount > 0 {
 		fmt.Printf("WARNING: There are %v errors\n", errorCount)
@@ -293,42 +432,46 @@ func main() {
 	}
 }
 
-func printErrors(config *Config) {
-	fmt.Fprintf(os.Stderr, "\n")
+func reportError(format string, parameters ...interface{}) {
+	_, _ = fmt.Fprintf(os.Stderr, format, parameters)
+}
 
-	for _, fact := range config.Facts {
-		if fact.Code.CompileError != nil || fact.Code.RunError != nil {
-			fmt.Fprintf(os.Stderr, "Error in Fact: %v\n", fact.Id)
-			fmt.Fprintf(os.Stderr, "  Expression: %s\n", fact.Expression)
-			if fact.Code.CompileError != nil {
-				fmt.Fprintf(os.Stderr, "  Compile Error: %v\n", fact.Code.CompileError)
+func printErrors(config *Config) {
+	reportError("\n")
+
+	for _, value := range config.Values {
+		if value.Code.CompileError != nil || value.Code.RunError != nil {
+			reportError("Error in Value: %v\n", value.Id)
+			reportError("  Expression: %s\n", value.Expression)
+			if value.Code.CompileError != nil {
+				reportError("  Compile Error: %v\n", value.Code.CompileError)
 			}
-			if fact.Code.RunError != nil {
-				fmt.Fprintf(os.Stderr, "  Run Error: %v\n", fact.Code.RunError)
+			if value.Code.RunError != nil {
+				reportError("  Run Error: %v\n", value.Code.RunError)
 			}
 		}
 	}
 
 	for _, rule := range config.Rules {
 		if rule.Code.CompileError != nil || rule.Code.RunError != nil || rule.SnippetErrorCount > 0 {
-			fmt.Fprintf(os.Stderr, "Error in Rule: %v\n", rule.Id)
+			reportError("Error in Rule: %v\n", rule.Id)
 			if rule.Code.CompileError != nil || rule.Code.RunError != nil {
-				fmt.Fprintf(os.Stderr, "  Expression: %s\n", rule.Expression)
+				reportError("  Expression: %s\n", rule.Expression)
 			}
 			if rule.Code.CompileError != nil {
-				fmt.Fprintf(os.Stderr, "  Compile Error: %v\n", rule.Code.CompileError)
+				reportError("  Compile Error: %v\n", rule.Code.CompileError)
 			}
 			if rule.Code.RunError != nil {
-				fmt.Fprintf(os.Stderr, "  Run Error: %v\n", rule.Code.RunError)
+				reportError("  Run Error: %v\n", rule.Code.RunError)
 			}
 			if rule.SnippetErrorCount > 0 {
 				for _, snippet := range rule.SnippetCodes {
-					fmt.Fprintf(os.Stderr, "  Snippet Expression: %s\n", snippet.Expression)
+					reportError("  Snippet Expression: %s\n", snippet.Expression)
 					if snippet.CompileError != nil {
-						fmt.Fprintf(os.Stderr, "    Compile Error: %v\n", snippet.CompileError)
+						reportError("    Compile Error: %v\n", snippet.CompileError)
 					}
 					if snippet.RunError != nil {
-						fmt.Fprintf(os.Stderr, "    Run Error: %v\n", snippet.RunError)
+						reportError("    Run Error: %v\n", snippet.RunError)
 					}
 				}
 

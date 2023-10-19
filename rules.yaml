@@ -1,12 +1,21 @@
-facts:
+values:
 
-  - id: 0
-    name: topics
+  - name: topics
     expression: 'items | filter(.Name == "metadata") | map(.Response.Topics) | first() | count(true)'
 
-  - id: 1
-    name: partitions
+  - name: partitions
     expression: 'items | filter(.Name == "metadata") | map(.Response.Topics) | first() | toPairs() | map(len(#[1].Partitions)) | sum()'
+
+outputs:
+
+  - message: 'Total topics: %v'
+    snippets: [ 'topics' ]
+
+  - message: 'Total partitions: %v'
+    snippets: [ 'partitions' ]
+
+  - message: 'Average partitions per topic: %v'
+    snippets: [ 'partitions / topics' ]
 
 rules:
 
@@ -39,30 +48,40 @@ rules:
   # Topic Metadata
 
   - id: 4
-    message: 'Total topics: %v'
-    snippets: ['items | filter(.Name == "metadata") | map(.Response.Topics) | first() | count(true)']
-    category: test
-    severity: info
-    expression: true
-
-  - id: 5
-    message: 'Total partitions: %v'
-    snippets: [ 'items | filter(.Name == "metadata") | map(.Response.Topics) | first() | toPairs() | map(len(#[1].Partitions)) | sum()' ]
-    category: test
-    severity: info
-    expression: true
-
-  - id: 6
-    message: 'Avg partitions per topic: %v'
-    snippets: ['partitions / topics']
-    category: test
-    severity: info
-    expression: true
-
-  - id: 7
     message: '%v topics with more than 10 partitions: %v'
     snippets: ['items | filter(.Name == "metadata") | map(.Response.Topics) | first() | toPairs() | filter(len(#[1].Partitions) > 10) | count(true)',
       'items | filter(.Name == "metadata") | map(.Response.Topics) | first() | toPairs() | filter(len(#[1].Partitions) > 10) | map(string(#[0]) + ":" + string(len(#[1].Partitions))) | toJSON()']
     category: topics
     severity: info
     expression: true
+    allow-long-message: true
+
+loop:
+  - names: ['topic', 'config']
+    expression: 'items | filter(.Name == "topic_configs") | map(.Response) | first() | map([.Name, .Configs]) | fromPairs()'
+
+    rules:
+
+      - message: "Topic %v has non default configs: %v"
+        expression: 'config | filter(.Source != "DEFAULT_CONFIG") | count(true) > 0'
+        category: 'test'
+        severity: 'info'
+        snippets: ['topic', 'config | filter(.Source != "DEFAULT_CONFIG") | map(.Key + "=" + .Value)']
+
+      - message: "Topic %v has redpanda.remote.delete set to false."
+        expression: 'config | filter(.Key == "redpanda.remote.delete" && .Value == "false") | count(true) > 0'
+        category: 'test'
+        severity: 'info'
+        snippets: [ 'topic' ]
+
+      - message: "Topic %v has retention.bytes set to -1 and retention.local.target.ms set to 1800000."
+        expression: >
+          (config | one(.Key == "retention.bytes" && .Value == "-1")) &&
+          (config | one(.Key == "retention.local.target.ms" && .Value == "1800000"))
+        category: 'test'
+        severity: 'info'
+        snippets: [ 'topic' ]
+
+
+
+
