@@ -8,6 +8,7 @@ import (
 	"github.com/antonmedv/expr/vm"
 	"gopkg.in/yaml.v3"
 	"os"
+	"strconv"
 	"strings"
 )
 
@@ -17,12 +18,6 @@ type Code struct {
 	CompileError error
 	RunError     error
 	Output       interface{}
-}
-
-type Printable interface {
-	Message() string
-	Snippets() []*Code
-	AllowLongMessage() bool
 }
 
 func (code *Code) compile(data map[string]interface{}) {
@@ -50,89 +45,138 @@ func (code *Code) run(data map[string]interface{}) {
 	}
 }
 
-type Output struct {
-	Id                 int    `yaml:"id"`
-	MessageContent     string `yaml:"message"`
-	Severity           string `yaml:"severity"`
-	SeverityLevel      int
-	SnippetExpressions []string `yaml:"snippets"`
-	SnippetCodes       []*Code
-	SnippetErrorCount  int
-}
-
-func (o Output) Message() string {
-	return o.MessageContent
-}
-
-func (o Output) Snippets() []*Code {
-	return o.SnippetCodes
-}
-
-func (o Output) AllowLongMessage() bool {
-	return true
-}
-
 type Value struct {
-	Id         int    `yaml:"id"`
+	Id         string `yaml:"id"`
 	Name       string `yaml:"name"`
 	Expression string `yaml:"expression"`
 	Code       Code
 }
 
 type Rule struct {
-	Id                    int      `yaml:"id"`
-	Category              string   `yaml:"category"`
-	MessageContent        string   `yaml:"message"`
-	AllowLongMessageValue bool     `yaml:"allow-long-message"`
+	Id                    string `yaml:"id"`
+	Category              string `yaml:"category"`
+	MessageContent        string `yaml:"message"`
+	Truncate              string `yaml:"truncate"`
+	AllowLongMessageValue bool
 	Description           string   `yaml:"description"`
 	Severity              string   `yaml:"severity"`
 	Predicate             string   `yaml:"predicate"`
-	Suppresses            []int    `yaml:"suppresses"`
+	Suppresses            []string `yaml:"suppresses"`
 	SnippetExpressions    []string `yaml:"snippets"`
 	SeverityLevel         int
 	PredicateCode         Code
 	SnippetCodes          []*Code
 	SnippetErrorCount     int
+	Collations            []string `yaml:"collate"`
 }
 
-func (r Rule) Message() string {
-	return r.MessageContent
+func (rule *Rule) applyDefaults() {
+	if rule.Severity == "" {
+		rule.Severity = "info"
+	}
+	if rule.Predicate == "" {
+		rule.Predicate = "true"
+	}
+	if rule.Truncate == "" {
+		rule.Truncate = "true"
+	}
 }
 
-func (r Rule) Snippets() []*Code {
-	return r.SnippetCodes
+func (rule *Rule) preCompile() {
+	level, err := severityLevel(rule.Severity)
+	maybeDieWithoutMessage(err)
+	rule.SeverityLevel = level
+
+	value, err := strconv.ParseBool(rule.Truncate)
+	maybeDieWithoutMessage(err)
+	rule.AllowLongMessageValue = !value
 }
 
-func (r Rule) AllowLongMessage() bool {
-	return r.AllowLongMessageValue
+func (rule *Rule) compile(data map[string]interface{}) {
+
+	// Compile Predicate
+	rule.PredicateCode.Expression = rule.Predicate
+	rule.PredicateCode.compile(data)
+
+	// Compile Snippets
+	rule.SnippetCodes = make([]*Code, len(rule.SnippetExpressions))
+	for i, snippet := range rule.SnippetExpressions {
+		rule.SnippetCodes[i] = &Code{Expression: snippet}
+		rule.SnippetCodes[i].compile(data)
+		if rule.SnippetCodes[i].CompileError != nil {
+			rule.SnippetErrorCount = rule.SnippetErrorCount + 1
+		}
+	}
+}
+
+func (rule *Rule) runSnippets(data map[string]interface{}) {
+	if len(rule.SnippetCodes) > 0 {
+		for _, code := range rule.SnippetCodes {
+			if code.CompileError != nil {
+				code.Output = "<compile error>"
+			} else {
+				code.run(data)
+				if code.RunError != nil {
+					code.Output = "<run error>"
+					//rule.SnippetErrorCount = rule.SnippetErrorCount + 1
+				}
+			}
+		}
+	}
+}
+
+func (rule *Rule) run(data map[string]interface{}) map[string]interface{} {
+	collations := make(map[string]interface{})
+
+	// Run Rule
+	if rule.PredicateCode.CompileError == nil {
+		output, err := expr.Run(rule.PredicateCode.Program, data)
+
+		if err != nil {
+			rule.PredicateCode.RunError = err
+			errorCount = errorCount + 1
+		} else {
+			switch output.(type) {
+			case bool:
+				if output.(bool) {
+					rule.runSnippets(data)
+					if rule.MessageContent != "" {
+						var message = rule.getMessage()
+						fmt.Printf("%s: %s\n", strings.ToUpper(rule.Severity), message)
+					}
+					// if there are collations, then collate locally
+					if rule.Collations != nil {
+						for i, collation := range rule.Collations {
+							collations[collation] = rule.SnippetCodes[i].Output
+						}
+					}
+					// Suppress future rules if required
+					for _, item := range rule.Suppresses {
+						suppressed[item] = true
+					}
+				}
+			default:
+				rule.PredicateCode.RunError = errors.New("expression didn't result in a boolean value")
+			}
+		}
+	}
+
+	return collations
 }
 
 type Loop struct {
 	Expression     string `yaml:"expression"`
 	ExpressionCode Code
-	Names          []string     `yaml:"names"`
-	Collations     []*Collation `yaml:"collate"`
-	Values         []*Value     `yaml:"values"`
-	Loops          []*Loop      `yaml:"loop"`
-	Outputs        []*Output    `yaml:"outputs"`
-	Rules          []*Rule      `yaml:"rules"`
-}
-
-type Collation struct {
-	Id            int    `yaml:"id"`
-	Name          string `yaml:"name"`
-	Description   string `yaml:"description"`
-	Predicate     string `yaml:"predicate"`
-	PredicateCode Code
-	Value         string `yaml:"value"`
-	ValueCode     Code
+	Names          []string `yaml:"names"`
+	Values         []*Value `yaml:"values"`
+	Loops          []*Loop  `yaml:"loop"`
+	Rules          []*Rule  `yaml:"rules"`
 }
 
 type Config struct {
-	Values  []*Value  `yaml:"values"`
-	Loops   []*Loop   `yaml:"loop"`
-	Outputs []*Output `yaml:"outputs"`
-	Rules   []*Rule   `yaml:"rules"`
+	Values []*Value `yaml:"values"`
+	Loops  []*Loop  `yaml:"loop"`
+	Rules  []*Rule  `yaml:"rules"`
 }
 
 var errorCount int
@@ -231,7 +275,6 @@ func processValues(data map[string]interface{}, values []*Value) {
 		if value.Code.CompileError != nil {
 			errorCount = errorCount + 1
 		} else {
-			//value, err := expr.Run(program, data)
 			value.Code.run(data)
 			if value.Code.RunError != nil {
 				errorCount = errorCount + 1
@@ -247,117 +290,47 @@ func processValues(data map[string]interface{}, values []*Value) {
 	}
 }
 
-func processOutputs(data map[string]interface{}, outputs []*Output, severity int) {
-	for _, output := range outputs {
+var suppressed = make(map[string]bool)
 
-		if output.Severity == "" {
-			output.Severity = "info"
+func collate(collated map[string]interface{}, collations map[string]interface{}) map[string]interface{} {
+	for k, v := range collations {
+		if _, found := collated[k]; !found {
+			collated[k] = make([]interface{}, 0)
 		}
-		level, err := severityLevel(output.Severity)
-		maybeDieWithoutMessage(err)
-		output.SeverityLevel = level
-		if output.SeverityLevel <= severity {
-
-			// Compile Snippets
-			output.SnippetCodes = make([]*Code, len(output.SnippetExpressions))
-			for i, snippet := range output.SnippetExpressions {
-				output.SnippetCodes[i] = &Code{Expression: snippet}
-				output.SnippetCodes[i].compile(data)
-				if output.SnippetCodes[i].CompileError != nil {
-					output.SnippetErrorCount = output.SnippetErrorCount + 1
-				}
-			}
-
-			var message = getMessage(data, output)
-			fmt.Printf("%s: %s\n", strings.ToUpper(output.Severity), message)
-		}
-
+		collated[k] = append(collated[k].([]interface{}), v)
 	}
+	return collated
 }
 
-var suppressed = make(map[int]int)
-
-func processRules(data map[string]interface{}, rules []*Rule, severity int) {
+func processRules(data map[string]interface{}, rules []*Rule, severity int) map[string]interface{} {
+	collated := make(map[string]interface{}, 0)
 	for _, rule := range rules {
 		_, isSuppressed := suppressed[rule.Id]
-
-		level, err := severityLevel(rule.Severity)
-		maybeDieWithoutMessage(err)
-		rule.SeverityLevel = level
-
+		rule.applyDefaults()
+		rule.preCompile()
 		if rule.SeverityLevel <= severity && !isSuppressed {
-
-			// Compile Rule
-			rule.PredicateCode.Expression = rule.Predicate
-			rule.PredicateCode.compile(data)
-			level, err := severityLevel(rule.Severity)
-			maybeDieWithoutMessage(err)
-			rule.SeverityLevel = level
-
-			// Compile Snippets
-			rule.SnippetCodes = make([]*Code, len(rule.SnippetExpressions))
-			for i, snippet := range rule.SnippetExpressions {
-				rule.SnippetCodes[i] = &Code{Expression: snippet}
-				rule.SnippetCodes[i].compile(data)
-				if rule.SnippetCodes[i].CompileError != nil {
-					rule.SnippetErrorCount = rule.SnippetErrorCount + 1
-				}
-			}
-
-			// Run Rule
-			if rule.PredicateCode.CompileError == nil {
-				output, err := expr.Run(rule.PredicateCode.Program, data)
-
-				if err != nil {
-					rule.PredicateCode.RunError = err
-					errorCount = errorCount + 1
-				} else {
-					switch output.(type) {
-					case bool:
-						if output.(bool) {
-							var message = getMessage(data, rule)
-							fmt.Printf("%s: %s\n", strings.ToUpper(rule.Severity), message)
-							for _, item := range rule.Suppresses {
-								suppressed[item] = item
-							}
-						}
-					default:
-						rule.PredicateCode.RunError = errors.New("expression didn't result in a boolean value")
-					}
-				}
-			}
+			rule.compile(data)
+			collations := rule.run(data)
+			collated = collate(collated, collations)
 		}
 	}
+	return collated
 }
 
-func getMessage(data map[string]interface{}, rule Printable) string {
-	rule.Snippets()
-	if len(rule.Snippets()) == 0 {
-		return rule.Message()
-	} else {
-		snippetResults := make([]interface{}, len(rule.Snippets()))
-		for i, code := range rule.Snippets() {
-			if code.CompileError != nil {
-				snippetResults[i] = "<compile error>"
-			} else {
-				code.run(data)
-				if code.RunError != nil {
-					snippetResults[i] = "<run error>"
-					//rule.SnippetErrorCount = rule.SnippetErrorCount + 1
-				} else {
-					snippetResults[i] = code.Output
-				}
-			}
-		}
-		output := fmt.Sprintf(rule.Message(), snippetResults...)
-		if len(output) > 1000 && rule.AllowLongMessage() == false {
-			output = output[0:1000] + " ... <truncated>"
-		}
-		return output
+func (rule *Rule) getMessage() string {
+	snippetResults := make([]interface{}, len(rule.SnippetCodes))
+	for i, code := range rule.SnippetCodes {
+		snippetResults[i] = code.Output
 	}
+	output := fmt.Sprintf(rule.MessageContent, snippetResults...)
+	if len(output) > 1000 && rule.AllowLongMessageValue == false {
+		output = output[0:1000] + " ... <truncated>"
+	}
+	return output
 }
 
-func processLoops(data map[string]interface{}, loops []*Loop, severity int) {
+func processLoops(data map[string]interface{}, loops []*Loop, severity int) map[string]interface{} {
+	collated := make(map[string]interface{}, 0)
 	for _, loop := range loops {
 		loop.ExpressionCode.Expression = loop.Expression
 		loop.ExpressionCode.compile(data)
@@ -381,11 +354,20 @@ func processLoops(data map[string]interface{}, loops []*Loop, severity int) {
 					d[loop.Names[0]] = k
 					d[loop.Names[1]] = v
 					processValues(d, loop.Values)
-					processLoops(d, loop.Loops, severity)
-					processOutputs(d, loop.Outputs, severity)
-					processRules(d, loop.Rules, severity)
+					collations := processLoops(d, loop.Loops, severity)
+					collated = collate(collated, collations)
+					for k, v := range collations {
+						if _, found := d[k]; found {
+							maybeDieWithoutMessage(errors.New("oops"))
+						} else {
+							d[k] = v
+						}
+					}
+					collations = processRules(d, loop.Rules, severity)
+					collated = collate(collated, collations)
+				} else {
+					loop.ExpressionCode.RunError = errors.New("wrong number of names for map")
 				}
-				loop.ExpressionCode.RunError = errors.New("wrong number of names for map")
 			}
 		case []interface{}:
 			for _, v := range loop.ExpressionCode.Output.([]interface{}) {
@@ -397,15 +379,24 @@ func processLoops(data map[string]interface{}, loops []*Loop, severity int) {
 					d["outer"] = data
 					d[loop.Names[0]] = v
 					processValues(d, loop.Values)
-					processOutputs(d, loop.Outputs, severity)
-					processRules(d, loop.Rules, severity)
-					processLoops(d, loop.Loops, severity)
+					collations := processLoops(d, loop.Loops, severity)
+					collated = collate(collated, collations)
+					for k, v := range collations {
+						if _, found := d[k]; found {
+							maybeDieWithoutMessage(errors.New("oops"))
+						} else {
+							d[k] = v
+						}
+					}
+					collations = processRules(d, loop.Rules, severity)
+					collated = collate(collated, collations)
 				}
 			}
 		default:
 			println("Oops")
 		}
 	}
+	return collated
 }
 
 func main() {
@@ -430,8 +421,16 @@ func main() {
 	err, config := readConfig(rulesFile)
 
 	processValues(data, config.Values)
-	processLoops(data, config.Loops, severity)
-	processOutputs(data, config.Outputs, severity)
+	collations := processLoops(data, config.Loops, severity)
+
+	for k, v := range collations {
+		if _, found := data[k]; found {
+			maybeDieWithoutMessage(errors.New("oops"))
+		} else {
+			data[k] = v
+		}
+	}
+
 	processRules(data, config.Rules, severity)
 
 	if errorCount > 0 {
@@ -444,7 +443,11 @@ func main() {
 }
 
 func reportError(format string, parameters ...interface{}) {
-	_, _ = fmt.Fprintf(os.Stderr, format, parameters)
+	if parameters == nil {
+		_, _ = fmt.Fprintf(os.Stderr, format)
+	} else {
+		_, _ = fmt.Fprintf(os.Stderr, format, parameters)
+	}
 }
 
 func printErrors(config *Config) {
@@ -477,12 +480,14 @@ func printErrors(config *Config) {
 			}
 			if rule.SnippetErrorCount > 0 {
 				for _, snippet := range rule.SnippetCodes {
-					reportError("  Snippet Predicate: %s\n", snippet.Expression)
-					if snippet.CompileError != nil {
-						reportError("    Compile Error: %v\n", snippet.CompileError)
-					}
-					if snippet.RunError != nil {
-						reportError("    Run Error: %v\n", snippet.RunError)
+					if snippet.CompileError != nil || snippet.RunError != nil {
+						reportError("  Snippet Predicate: %s\n", snippet.Expression)
+						if snippet.CompileError != nil {
+							reportError("    Compile Error: %v\n", snippet.CompileError)
+						}
+						if snippet.RunError != nil {
+							reportError("    Run Error: %v\n", snippet.RunError)
+						}
 					}
 				}
 
