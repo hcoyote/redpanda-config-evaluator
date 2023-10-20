@@ -50,9 +50,6 @@ rules:
 
   - id: '53c1c2e3-6d02-4617-aa26-affbf41ab063'
     message: 'Cluster has no rack awareness'
-    description: >
-      Rack awareness provides a performance benefit for consumers that configure follower fetching. It also ensures data
-      resiliency by
     category: 'metadata'
     severity: 'warning'
     predicate: 'items | filter(.Name == "metadata") | map(.Response.Brokers) | first() | map(.Rack) | all(# == nil)'
@@ -62,10 +59,7 @@ rules:
     message: 'Cluster has fewer than three unique racks'
     category: 'metadata'
     severity: 'warning'
-    predicate: >
-      (items | filter(.Name == "metadata") | map(.Response.Brokers) | first() | map(.Rack) | filter (# != nil) | sort() | uniq() | count(true) < 3)
-
-  # Topic Metadata
+    predicate: '(items | filter(.Name == "metadata") | map(.Response.Brokers) | first() | map(.Rack) | filter (# != nil) | sort() | uniq() | count(true) < 3)'
 
   - id: '7789f312-b801-4108-9e18-468455f335db'
     message: '%v topics with more than 10 partitions: %v'

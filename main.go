@@ -297,7 +297,15 @@ func collate(collated map[string]interface{}, collations map[string]interface{})
 		if _, found := collated[k]; !found {
 			collated[k] = make([]interface{}, 0)
 		}
-		collated[k] = append(collated[k].([]interface{}), v)
+		switch v.(type) {
+		case []interface{}:
+			items := v.([]interface{})
+			for _, item := range items {
+				collated[k] = append(collated[k].([]interface{}), item)
+			}
+		case interface{}:
+			collated[k] = append(collated[k].([]interface{}), v)
+		}
 	}
 	return collated
 }

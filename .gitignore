@@ -1,1 +1,4 @@
-d.yaml
+.idea/
+*.json
+*.yaml
+go.sum
