@@ -16,7 +16,7 @@ rules:
     predicate: len(superusers) == 0
 
   - id: 1
-    message: 'Cluster default replication count is < 3 (current = %v)'
+    message: 'Cluster default replication count is < 3 (current = %v) posing a data loss risk in multi-node cluster'
     category: production
     severity: info
     snippets: ['default_topic_replications']
