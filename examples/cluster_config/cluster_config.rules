@@ -1,0 +1,74 @@
+# General Settings
+#
+# cluster_config.json parser
+# 
+# The parser lands these into the internal items variable, so all keys are 
+# directly accessible by their top-level names.
+#
+# ./evaluator -data debug-bundle/admin/cluster_config.json -rules cluster_config.rules
+
+rules:
+  - id: 0
+    message: 'Cluster super users %v is empty allowing anyone to modify ACLs'
+    category: security
+    severity: warning
+    snippets: ['len(superusers)']
+    predicate: len(superusers) == 0
+
+  - id: 1
+    message: 'Cluster default replication count is < 3 (current = %v)'
+    category: production
+    severity: info
+    snippets: ['default_topic_replications']
+    predicate: default_topic_replications == 1
+
+  - id: 2
+    message: 'Cluster per-replica memory config too low for production (current %v bytes, recommended %v)'
+    category: production-stability
+    severity: warning
+    snippets: ['topic_memory_per_partition', 4*1024*1024]
+    predicate: topic_memory_per_partition < 4*1024*1024
+
+  - id: 3
+    message: 'Storage used alert percent is %v, recommend at least %v in production'
+    category: production-stability
+    severity: info
+    snippets: ['storage_space_alert_free_threshold_percent', 5]
+    predicate: storage_space_alert_free_threshold_percent < 5
+
+  - id: 4
+    message: 'Space management is enabled, but the local retention strict override is not.'
+    category: production-stability
+    severity: info
+    predicate: >
+      (cloud_storage_enabled == true &&
+      space_management_enable == true) &&
+      retention_local_strict_override == false
+
+  - id: 5
+    message: 'Legacy enable_sasl configuration method in use; consider newer style with kafka_enable_authorization'
+    category: security
+    severity: warning
+    predicate: >
+      enable_sasl == true 
+
+  - id: 6
+    message: 'Partition autobalancing mode is %v instead of %v'
+    category: production-stability 
+    severity: warning
+    snippets: ['partition_autobalancing_mode', string("continuous")]
+    predicate: partition_autobalancing_mode != "continuous"
+
+  - id: 7
+    message: 'Leader balancing is disabled'
+    category: production-stability
+    severity: warning
+    predicate: enable_leader_balancer == false
+    
+
+  - id: 8
+    message: 'Cloud storage upload frequency is too small (current: %v seconds, recommended: %v)
+    category: production-stability
+    severity: info
+    snippets: ['cloud_storage_segment_max_upload_interval_sec',300]
+    predicate: cloud_storage_segment_max_upload_interval_sec < 300
